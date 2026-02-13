@@ -1,0 +1,42 @@
+name: fabric_detector
+description: CNN-based fabric defect detection app with multi-model support
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # ML - Using TFLite since ONNX Runtime not available
+  tflite_flutter: ^0.10.4
+  image: ^4.1.0
+  
+  # Camera & Gallery
+  camera: ^0.10.5
+  image_picker: ^1.0.7
+  
+  # File management
+  path_provider: ^2.1.2
+  path: ^1.8.3
+  
+  # UI
+  cupertino_icons: ^1.0.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.1
+
+flutter:
+  uses-material-design: true
+  
+  assets:
+    - assets/models/
+    - assets/models/model_algod.onnx
+    - assets/models/model_algod.onnx.data
+    - assets/models/model_polyester.onnx
+    - assets/models/model_polyester.onnx.data
+    - assets/models/model_general.onnx
+    - assets/models/model_general.onnx.data

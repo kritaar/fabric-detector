@@ -1,0 +1,45 @@
+# Archivos innecesarios
+venv/
+__pycache__/
+.gradio/
+*.pyc
+.DS_Store
+
+# Flutter/Dart
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+
+# Android
+*.iml
+.gradle/
+local.properties
+.idea/
+*.hprof
+captures/
+output.json
+
+# iOS
+*.mode1v3
+*.mode2v3
+*.moved-aside
+*.pbxuser
+*.perspectivev3
+**/*sync/
+.sconsign.dblite
+.tags*
+**/.vagrant/
+**/DerivedData/
+Icon?
+**/Pods/
+**/.symlinks/
+profile
+xcuserdata
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
