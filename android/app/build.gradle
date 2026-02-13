@@ -20,7 +20,7 @@ android {
 
     defaultConfig {
         applicationId = "com.fabricdetector.app"
-        minSdk = 21
+        minSdk = 26  // Required by tflite_flutter
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
