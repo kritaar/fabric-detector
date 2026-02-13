@@ -34,9 +34,5 @@ flutter:
   
   assets:
     - assets/models/
-    - assets/models/model_algod.onnx
-    - assets/models/model_algod.onnx.data
-    - assets/models/model_polyester.onnx
-    - assets/models/model_polyester.onnx.data
     - assets/models/model_general.onnx
     - assets/models/model_general.onnx.data
