@@ -12,15 +12,20 @@ class InferenceService {
   Future<void> loadModel(String path) async {
     _isReady = false;
     _session?.release();
-    
-    final sessionOptions = OrtSessionOptions();
-    // Intenta usar NNAPI (NPU) en Android si es posible
-    // sessionOptions.addDelegate(OrtEnv.instance.createNnapiDelegate()); 
-    // Nota: NnapiDelegate requiere configuración extra, por defecto CPU/Int8 es rápido
+    try {
+      final sessionOptions = OrtSessionOptions();
+      // Intenta usar NNAPI (NPU) en Android si es posible
+      // sessionOptions.addDelegate(OrtEnv.instance.createNnapiDelegate()); 
+      // Nota: NnapiDelegate requiere configuración extra, por defecto CPU/Int8 es rápido
 
-    _session = OrtSession.fromFile(File(path), sessionOptions);
-    _isReady = true;
-    print("Modelo cargado: $path");
+      _session = OrtSession.fromFile(File(path), sessionOptions);
+      _isReady = true;
+      print("Modelo cargado OK: $path");
+    } catch (e) {
+      print("Error cargando modelo: $e");
+      _isReady = false;
+      rethrow; // Propagate error to UI
+    }
   }
 
   bool get isReady => _isReady;
