@@ -42,19 +42,35 @@ class _HomeScreenState extends State<HomeScreen> {
   String _status = "Selecciona un modelo (.onnx)";
 
   Future<void> _pickModel() async {
-    // Pedir permisos de almacenamiento si es necesario (Android 10+)
-    var status = await Permission.storage.request();
+    // En Android 13+, Permission.storage suele estar denegado permanentemente.
+    // FilePicker usa el selector del sistema que no requiere permiso explícito.
+    // Solo pedimos si es estrictamente necesario (versiones antiguas).
+    if (await Permission.storage.status.isDenied) {
+      await Permission.storage.request();
+    }
     
-    FilePickerResult? result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['onnx'],
-    );
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.any, // 'any' es más seguro si 'onnx' falla por MIME type
+      );
 
-    if (result != null) {
-      setState(() {
-        selectedModelPath = result.files.single.path;
-        _status = "Modelo listo:\n${result.files.single.name}";
-      });
+      if (result != null) {
+        final path = result.files.single.path;
+        if (path != null && path.endsWith(".onnx")) {
+             setState(() {
+              selectedModelPath = path;
+              _status = "Modelo listo:\n${result.files.single.name}";
+            });
+        } else {
+           ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Por favor selecciona un archivo .onnx")),
+          );
+        }
+      }
+    } catch (e) {
+       ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error al abrir selector: $e")),
+      );
     }
   }
 
@@ -65,39 +81,11 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       return;
     }
-    if (cameras.isEmpty) {
-       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("No se detectaron cámaras")),
-      );
-      return;
-    }
-
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const CameraScreen()),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("Detector de Telas")),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.memory, size: 80, color: Colors.tealAccent),
-            const SizedBox(height: 20),
-            Text(
-              _status,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 16),
-            ),
-            const SizedBox(height: 40),
-            ElevatedButton.icon(
+// ... existing code ...
+    ElevatedButton.icon(
               onPressed: _pickModel,
               icon: const Icon(Icons.folder_open),
-              label: const Text("Cargar Cartucho (.onnx)"),
+              label: const Text("Cargar Modelo (.onnx)"), // RENAMED
               style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(20)),
             ),
             const SizedBox(height: 20),
