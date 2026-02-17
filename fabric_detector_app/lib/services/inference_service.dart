@@ -48,7 +48,8 @@ class InferenceService {
       
       // 3. Postprocesamiento (Obtener máscara)
       // La salida es [1, 1, 512, 512] float (mapa de calor)
-      final outputTensor = outputs![0];
+      final outputTensor = outputs?[0];
+      if (outputTensor == null) return null;
       final outputData = outputTensor.value as List<List<List<List<double>>>>;
       
       inputOrt.release();

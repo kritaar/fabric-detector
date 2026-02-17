@@ -25,7 +25,11 @@ jobs:
           channel: 'stable'
           
       - name: Generate Platform Files
-        run: flutter create .
+        run: |
+          flutter create .
+          sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/g' android/app/build.gradle
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 23/g' android/app/build.gradle
+          sed -i 's/targetSdkVersion flutter.targetSdkVersion/targetSdkVersion 34/g' android/app/build.gradle
         working-directory: ./fabric_detector_app
 
       - name: Install dependencies
