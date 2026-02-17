@@ -30,8 +30,10 @@ jobs:
           sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/g' android/app/build.gradle
           sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 23/g' android/app/build.gradle
           sed -i 's/targetSdkVersion flutter.targetSdkVersion/targetSdkVersion 34/g' android/app/build.gradle
-          # Inyectar permiso de lectura (necesario para file_picker en algunas versiones)
+          # Inyectar permiso de lectura
           sed -i '/<application/i \    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>' android/app/src/main/AndroidManifest.xml
+          # Cambiar nombre visible de la App
+          sed -i 's/android:label="fabric_detector_app"/android:label="Detector de Defectos"/g' android/app/src/main/AndroidManifest.xml
         working-directory: ./fabric_detector_app
 
       - name: Install dependencies
@@ -45,5 +47,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-release
+          name: detector_de_defectos
           path: fabric_detector_app/build/app/outputs/flutter-apk/app-release.apk

@@ -21,7 +21,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Fabric Detector',
+      title: 'Detector de Defectos', // RENAMED
       theme: ThemeData.dark().copyWith(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal, brightness: Brightness.dark),
         useMaterial3: true,
@@ -42,16 +42,14 @@ class _HomeScreenState extends State<HomeScreen> {
   String _status = "Selecciona un modelo (.onnx)";
 
   Future<void> _pickModel() async {
-    // En Android 13+, Permission.storage suele estar denegado permanentemente.
-    // FilePicker usa el selector del sistema que no requiere permiso explícito.
-    // Solo pedimos si es estrictamente necesario (versiones antiguas).
+    // Permisos adaptativos
     if (await Permission.storage.status.isDenied) {
       await Permission.storage.request();
     }
     
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.any, // 'any' es más seguro si 'onnx' falla por MIME type
+        type: FileType.any, 
       );
 
       if (result != null) {
@@ -62,15 +60,19 @@ class _HomeScreenState extends State<HomeScreen> {
               _status = "Modelo listo:\n${result.files.single.name}";
             });
         } else {
-           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Por favor selecciona un archivo .onnx")),
-          );
+           if (mounted) {
+             ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text("Por favor selecciona un archivo .onnx")),
+            );
+           }
         }
       }
     } catch (e) {
-       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error al abrir selector: $e")),
-      );
+       if (mounted) {
+         ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error al abrir selector: $e")),
+        );
+       }
     }
   }
 
@@ -81,11 +83,39 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       return;
     }
-// ... existing code ...
-    ElevatedButton.icon(
+    if (cameras.isEmpty) {
+       ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("No se detectaron cámaras")),
+      );
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const CameraScreen()),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Detector de Defectos")),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.memory, size: 80, color: Colors.tealAccent),
+            const SizedBox(height: 20),
+            Text(
+              _status,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 16),
+            ),
+            const SizedBox(height: 40),
+            ElevatedButton.icon(
               onPressed: _pickModel,
               icon: const Icon(Icons.folder_open),
-              label: const Text("Cargar Modelo (.onnx)"), // RENAMED
+              label: const Text("Cargar Modelo (.onnx)"),
               style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(20)),
             ),
             const SizedBox(height: 20),
