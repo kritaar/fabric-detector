@@ -17,12 +17,12 @@ class _CameraScreenState extends State<CameraScreen> {
   bool _isDetecting = false;
   String _fpsText = "Iniciando...";
   List<double>? _currentDefectMap;
-  final StringBuffer _logs = StringBuffer(); // Log buffer
+  final StringBuffer _logs = StringBuffer();
 
   @override
   void initState() {
     super.initState();
-    _log("Iniciando CameraScreen...");
+    _log("Iniciando CameraScreen (Split View)...");
     _initCamera();
     if (selectedModelPath != null) {
       _loadModel();
@@ -73,21 +73,6 @@ class _CameraScreenState extends State<CameraScreen> {
       }
     } catch (e) {
       _log("Error fatal cargando modelo: $e");
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text("Error de Modelo"),
-            content: Text(e.toString()),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text("OK"),
-              )
-            ],
-          ),
-        );
-      }
     }
   }
 
@@ -100,7 +85,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
     _controller = CameraController(
       cameras[0],
-      ResolutionPreset.high, // IMPORTANTE: High para tener > 512px (720x1280)
+      ResolutionPreset.high, // 720p mínimo
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.yuv420,
     );
@@ -124,25 +109,21 @@ class _CameraScreenState extends State<CameraScreen> {
           if (mounted) {
              setState(() {
                 if (result == null) {
-                   // Si es null, quizás el modelo no está listo o error
                    if (_inferenceService.isReady) {
-                      _fpsText = "Error en Inferencia ($ms ms)";
+                      // Solo mostrar error si pasa mucho tiempo, para no flasear
                    } else {
                       _fpsText = "Esperando modelo...";
                    }
                 } else {
-                   _fpsText = "Inf: ${ms}ms";
+                   _fpsText = "Inferencia: ${ms}ms";
                    _currentDefectMap = result;
                 }
              });
           }
           _isDetecting = false;
         }).catchError((e) {
-           _log("Error en loop de inferencia: $e");
+           _log("Error en loop: $e");
            _isDetecting = false;
-           if (mounted) {
-             setState(() { _fpsText = "Error: Ver Logs"; });
-           }
         });
       });
       _log("Stream de imágenes iniciado.");
@@ -165,55 +146,85 @@ class _CameraScreenState extends State<CameraScreen> {
     }
 
     return Scaffold(
-      body: Stack(
-        fit: StackFit.expand,
+      backgroundColor: Colors.black,
+      body: Column(
         children: [
-          // 1. Cámara
-          CameraPreview(_controller!),
-          
-          // 2. Overlay de Defectos
-          if (_currentDefectMap != null)
-             Positioned.fill(
-               child: CustomPaint(
-                 painter: DefectPainter(
-                   heatmap: _currentDefectMap!,
-                   sensitivity: sensitivity.value,
-                 ),
-               ),
-             ),
-          
-          // 3. UI Info (Click para Logs)
-          Positioned(
-            top: 40,
-            left: 20,
-            child: GestureDetector(
-              onTap: _showLogs,
-              child: Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.black54,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.greenAccent)
+          // --- VISTA SUPERIOR: CÁMARA REAL ---
+          Expanded(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                CameraPreview(_controller!),
+                Positioned(
+                  top: 10, left: 10,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    color: Colors.black54,
+                    child: const Text("Cámara Real", style: TextStyle(color: Colors.white)),
+                  ),
                 ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.bug_report, color: Colors.greenAccent, size: 16),
-                    const SizedBox(width: 8),
-                    Text(_fpsText, style: const TextStyle(color: Colors.greenAccent, fontSize: 16, fontWeight: FontWeight.bold)),
-                  ],
-                ),
-              ),
+                // Botón Logs
+                Positioned(
+                  top: 10, right: 10,
+                  child: GestureDetector(
+                    onTap: _showLogs,
+                    child: const Icon(Icons.bug_report, color: Colors.greenAccent),
+                  ),
+                )
+              ],
             ),
           ),
           
-          // 4. Controles
-          Positioned(
-            bottom: 30,
-            left: 20,
-            right: 20,
+          // --- DIVISOR ---
+          Container(height: 2, color: Colors.white30),
+          
+          // --- VISTA INFERIOR: MAPA DE DEFECTOS (HEATMAP) ---
+          Expanded(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // Fondo negro o gris oscuro para resaltar el rojo
+                Container(color: Colors.grey[900]),
+                
+                if (_currentDefectMap != null)
+                   CustomPaint(
+                     painter: DefectPainter(
+                       heatmap: _currentDefectMap!,
+                       sensitivity: sensitivity.value,
+                     ),
+                   )
+                else
+                   Center(
+                     child: Text(
+                       _fpsText,
+                       style: const TextStyle(color: Colors.white54),
+                     ),
+                   ),
+
+                Positioned(
+                  top: 10, left: 10,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    color: Colors.black54,
+                    child: const Text("Mapa de Defectos (IA)", style: TextStyle(color: Colors.redAccent)),
+                  ),
+                ),
+                
+                // Info FPS Overlay en la vista de abajo también
+                if (_currentDefectMap != null)
+                  Positioned(
+                    bottom: 10, right: 10,
+                    child: Text(_fpsText, style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+                  ),
+              ],
+            ),
+          ),
+          
+          // --- CONTROLES (ABAJO DEL TODO) ---
+          Container(
+            padding: const EdgeInsets.all(16),
+            color: Colors.black,
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text("Sensibilidad", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                 ValueListenableBuilder<double>(
@@ -238,13 +249,12 @@ class _CameraScreenState extends State<CameraScreen> {
                     );
                   },
                 ),
-                Center(
-                  child: FloatingActionButton(
-                    backgroundColor: Colors.red,
-                    mini: true,
-                    child: const Icon(Icons.close),
-                    onPressed: () => Navigator.pop(context),
-                  ),
+                const SizedBox(height: 10),
+                FloatingActionButton(
+                  backgroundColor: Colors.red,
+                  mini: true,
+                  child: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
                 )
               ],
             ),
@@ -264,22 +274,24 @@ class DefectPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.red.withOpacity(0.6)
+      ..color = Colors.red
       ..style = PaintingStyle.fill;
     
     // Asumimos salida 512x512
+    // IMPORTANTE: Escalar al tamaño del widget (Expanded inferior)
     final double scaleX = size.width / 512;
     final double scaleY = size.height / 512;
     final double threshold = sensitivity; 
     
-    // Optimización: Dibujar 1 de cada 4 pixels para rendimiento
+    // Optimización: Dibujar 1 de cada 4 pixels
     for (int y = 0; y < 512; y += 4) {
       for (int x = 0; x < 512; x += 4) {
         final int index = y * 512 + x;
         if (index < heatmap.length) {
           if (heatmap[index] > threshold) {
+            // Dibujar rectángulo proporcional
             canvas.drawRect(
-              Rect.fromLTWH(x * scaleX, y * scaleY, 4 * scaleX, 4 * scaleY),
+              Rect.fromLTWH(x * scaleX, y * scaleY, 4 * scaleX + 1, 4 * scaleY + 1), // +1 para evitar huecos
               paint
             );
           }
