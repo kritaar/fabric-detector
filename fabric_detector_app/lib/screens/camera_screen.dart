@@ -22,6 +22,8 @@ class _CameraScreenState extends State<CameraScreen> {
   @override
   void initState() {
     super.initState();
+    _inferenceService.onLog = _log; // Conectar logs
+    
     _log("Iniciando CameraScreen (Split View)...");
     _initCamera();
     if (selectedModelPath != null) {

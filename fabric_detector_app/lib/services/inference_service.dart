@@ -8,18 +8,26 @@ import 'package:camera/camera.dart';
 class InferenceService {
   OrtSession? _session;
   bool _isReady = false;
+  Function(String)? onLog; // Callback para logs en pantalla
 
   Future<void> loadModel(String path) async {
     _isReady = false;
     _session?.release();
     try {
       final sessionOptions = OrtSessionOptions();
-      // sessionOptions.addDelegate(OrtEnv.instance.createNnapiDelegate());
+      // ACTIVAR NNAPI (NPU) PARA POCO X6 PRO
+      try {
+        sessionOptions.addDelegate(OrtEnv.instance.createNnapiDelegate());
+        _log("NNAPI Delegate activado (NPU).");
+      } catch (e) {
+        _log("Error activando NNAPI: $e. Usando CPU.");
+      }
+
       _session = OrtSession.fromFile(File(path), sessionOptions);
       _isReady = true;
-      print("Modelo cargado OK: $path");
+      _log("Modelo cargado OK: $path");
     } catch (e) {
-      print("Error cargando modelo: $e");
+      _log("Error cargando modelo: $e");
       _isReady = false;
       rethrow; 
     }
@@ -27,38 +35,45 @@ class InferenceService {
 
   bool get isReady => _isReady;
 
+  void _log(String msg) {
+    if (onLog != null) {
+      onLog!(msg);
+    } else {
+      print(msg);
+    }
+  }
+
   Future<List<double>?> runInference(CameraImage cameraImage) async {
     if (!_isReady || _session == null) return null;
 
-    // 1. Extraer datos para el Isolate (CameraImage no pasa entre isolates)
+    // 1. Extraer datos para el Isolate 
     final yuvData = YUVData.fromCameraImage(cameraImage);
     if (yuvData == null) {
-       print("Error: Imagen vacía (<512px)");
+       // _log("Error: Imagen vacía (<512px)"); // Demasiado spam si falla continuo
        return null;
     }
 
     // 2. Preprocesamiento en SEGUNDO PLANO (Isolate)
-    print("   [YUV] Start Compute...");
-    // compute() spawns an isolate, runs the function, returns result.
+    // _log("[YUV] Start Compute..."); 
     final List<double> inputFloats;
     try {
       inputFloats = await compute(_convertYuvIsolate, yuvData);
-      print("   [YUV] End Compute. Size: ${inputFloats.length}");
+      // _log("[YUV] End Compute. Size: ${inputFloats.length}");
     } catch (e) {
-      print("Error YUV Compute: $e");
+      _log("Error YUV Compute: $e");
       return null;
     }
     
-    // 3. Crear tensor con los datos procesados
+    // 3. Crear tensor
     final inputOrt = OrtValueTensor.createTensorWithDataList(inputFloats, [1, 3, 512, 512]);
     final runOptions = OrtRunOptions();
     final inputs = {'input': inputOrt}; 
     
     try {
-      // 4. Inferencia ONNX (Nativa, ya es 'async' en el lado de C++)
-      print("   [ORT] Start RunAsync...");
+      // 4. Inferencia ONNX 
+      // _log("[ORT] Start RunAsync...");
       final outputs = await _session!.runAsync(runOptions, inputs);
-      print("   [ORT] End RunAsync. Output valid: ${outputs?.isNotEmpty}");
+      // _log("[ORT] End RunAsync. Output valid: ${outputs?.isNotEmpty}");
       
       final outputTensor = outputs?[0];
       if (outputTensor == null) return null;
@@ -67,11 +82,10 @@ class InferenceService {
       inputOrt.release();
       runOptions.release();
       
-      // Retornar solo la lista plana
       return outputData[0][0].expand((i) => i).toList(); 
       
     } catch (e) {
-      print("Error Inferencia: $e");
+      _log("Error Inferencia: $e");
       return null;
     }
   }
