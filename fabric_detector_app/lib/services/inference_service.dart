@@ -30,33 +30,31 @@ class InferenceService {
   Future<List<double>?> runInference(CameraImage cameraImage) async {
     if (!_isReady || _session == null) return null;
 
-    // 1. Preprocesamiento: YUV420 -> Float32 [1, 3, 512, 512]
+    // 1. Preprocesamiento: YUV420 -> Float32
+    print("   [YUV] Start conversion...");
     List<double> inputFloats;
     try {
       inputFloats = _cameraImageToFloat32List(cameraImage);
+      print("   [YUV] End conversion. Size: ${inputFloats.length}");
       if (inputFloats.isEmpty) {
-        print("Error: Imagen demasiado pequeña (<512px)");
-        return null;
+         print("Error: Imagen vacía (<512px)");
+         return null;
       }
     } catch (e) {
-      print("Error conversión YUV: $e");
+      print("Error YUV Catch: $e");
       return null;
     }
     
-    // Crear tensor de entrada
-    final inputOrt = OrtValueTensor.createTensorWithDataList(
-      inputFloats, 
-      [1, 3, 512, 512]
-    );
-
+    final inputOrt = OrtValueTensor.createTensorWithDataList(inputFloats, [1, 3, 512, 512]);
     final runOptions = OrtRunOptions();
     final inputs = {'input': inputOrt}; 
     
     try {
       // 2. Inferencia ONNX
+      print("   [ORT] Start RunAsync...");
       final outputs = await _session!.runAsync(runOptions, inputs);
+      print("   [ORT] End RunAsync. Output valid: ${outputs?.isNotEmpty}");
       
-      // 3. Postprocesamiento
       final outputTensor = outputs?[0];
       if (outputTensor == null) return null;
       final outputData = outputTensor.value as List<List<List<List<double>>>>;
