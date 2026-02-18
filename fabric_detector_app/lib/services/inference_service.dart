@@ -31,7 +31,17 @@ class InferenceService {
     if (!_isReady || _session == null) return null;
 
     // 1. Preprocesamiento: YUV420 -> Float32 [1, 3, 512, 512]
-    final inputFloats = _cameraImageToFloat32List(cameraImage);
+    List<double> inputFloats;
+    try {
+      inputFloats = _cameraImageToFloat32List(cameraImage);
+      if (inputFloats.isEmpty) {
+        print("Error: Imagen demasiado pequeña (<512px)");
+        return null;
+      }
+    } catch (e) {
+      print("Error conversión YUV: $e");
+      return null;
+    }
     
     // Crear tensor de entrada
     final inputOrt = OrtValueTensor.createTensorWithDataList(
@@ -68,8 +78,11 @@ class InferenceService {
     final int width = image.width;
     final int height = image.height;
     
-    // Validar planos
+    // Validar planos y resolución mínima
     if (image.planes.isEmpty) return [];
+    if (width < 512 || height < 512) {
+      return []; 
+    }
     
     final int uvRowStride = image.planes[1].bytesPerRow;
     final int? uvPixelStride = image.planes[1].bytesPerPixel;

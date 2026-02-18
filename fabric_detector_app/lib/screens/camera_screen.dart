@@ -100,7 +100,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
     _controller = CameraController(
       cameras[0],
-      ResolutionPreset.medium, 
+      ResolutionPreset.high, // IMPORTANTE: High para tener > 512px (720x1280)
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.yuv420,
     );
