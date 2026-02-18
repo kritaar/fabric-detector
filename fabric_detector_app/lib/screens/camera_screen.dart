@@ -149,33 +149,38 @@ class _CameraScreenState extends State<CameraScreen> {
 
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Column(
-        children: [
-          // --- VISTA SUPERIOR: CÁMARA REAL ---
-          Expanded(
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                CameraPreview(_controller!),
-                Positioned(
-                  top: 10, left: 10,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    color: Colors.black54,
-                    child: const Text("Cámara Real", style: TextStyle(color: Colors.white)),
+      body: SafeArea( // FIX: Evita que la barra de estado tape botones (Notch/Status Bar)
+        child: Column(
+          children: [
+            // --- VISTA SUPERIOR: CÁMARA REAL ---
+            Expanded(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  CameraPreview(_controller!), // Se verá recortado por SafeArea, pero seguro
+                  Positioned(
+                    top: 10, left: 10,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      color: Colors.black54,
+                      child: const Text("Cámara Real", style: TextStyle(color: Colors.white)),
+                    ),
                   ),
-                ),
-                // Botón Logs
-                Positioned(
-                  top: 10, right: 10,
-                  child: GestureDetector(
-                    onTap: _showLogs,
-                    child: const Icon(Icons.bug_report, color: Colors.greenAccent),
-                  ),
-                )
-              ],
+                  // Botón Logs (Más grande y accesible)
+                  Positioned(
+                    top: 10, right: 10,
+                    child: GestureDetector(
+                      onTap: _showLogs,
+                      child: Container(
+                        padding: const EdgeInsets.all(12), // Zona táctil más grande
+                        color: Colors.transparent, // Necesario para detectar tap en padding
+                        child: const Icon(Icons.bug_report, color: Colors.greenAccent, size: 32),
+                      ),
+                    ),
+                  )
+                ],
+              ),
             ),
-          ),
           
           // --- DIVISOR ---
           Container(height: 2, color: Colors.white30),
