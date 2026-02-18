@@ -17,8 +17,9 @@ class InferenceService {
       final sessionOptions = OrtSessionOptions();
       // ACTIVAR NNAPI (NPU) PARA POCO X6 PRO
       try {
-        sessionOptions.addDelegate(OrtEnv.instance.createNnapiDelegate());
-        _log("NNAPI Delegate activado (NPU).");
+        // ERROR: addDelegate y createNnapiDelegate no existen en 1.4.1
+        // sessionOptions.addDelegate(OrtEnv.instance.createNnapiDelegate());
+        _log("NNAPI Delegate desactivado (Versión antigua 1.4.1). Usando CPU Int8.");
       } catch (e) {
         _log("Error activando NNAPI: $e. Usando CPU.");
       }
