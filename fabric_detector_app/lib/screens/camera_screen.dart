@@ -16,26 +16,63 @@ class _CameraScreenState extends State<CameraScreen> {
   final InferenceService _inferenceService = InferenceService();
   bool _isDetecting = false;
   String _fpsText = "Iniciando...";
-  List<double>? _currentDefectMap; // 512x512 flattened
+  List<double>? _currentDefectMap;
+  final StringBuffer _logs = StringBuffer(); // Log buffer
 
   @override
   void initState() {
     super.initState();
+    _log("Iniciando CameraScreen...");
     _initCamera();
     if (selectedModelPath != null) {
       _loadModel();
+    } else {
+      _log("Advertencia: No hay modelo seleccionado.");
     }
   }
 
+  void _log(String msg) {
+    print(msg);
+    _logs.writeln("${DateTime.now().hour}:${DateTime.now().minute}:${DateTime.now().second} - $msg");
+  }
+
+  void _showLogs() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Logs de Depuración"),
+        content: SingleChildScrollView(
+          child: Text(_logs.toString(), style: const TextStyle(fontSize: 12)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("Cerrar"),
+          ),
+          TextButton(
+            onPressed: () {
+              setState(() { _logs.clear(); });
+              Navigator.pop(ctx);
+            },
+            child: const Text("Limpiar"),
+          )
+        ],
+      ),
+    );
+  }
+
   Future<void> _loadModel() async {
+    _log("Cargando modelo desde: $selectedModelPath");
     try {
       await _inferenceService.loadModel(selectedModelPath!);
+      _log("Modelo cargado correctamente.");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("Modelo cargado correctamente")),
         );
       }
     } catch (e) {
+      _log("Error fatal cargando modelo: $e");
       if (mounted) {
         showDialog(
           context: context,
@@ -55,6 +92,12 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _initCamera() async {
+    _log("Inicializando cámara...");
+    if (cameras.isEmpty) {
+      _log("Error: Lista de cámaras vacía.");
+      return;
+    }
+
     _controller = CameraController(
       cameras[0],
       ResolutionPreset.medium, 
@@ -64,6 +107,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
     try {
       await _controller!.initialize();
+      _log("Cámara inicializada.");
       if (!mounted) return;
       setState(() {});
 
@@ -73,23 +117,38 @@ class _CameraScreenState extends State<CameraScreen> {
         
         final startTime = DateTime.now();
         
-        // Ejecutar inferencia
         _inferenceService.runInference(image).then((result) {
           final endTime = DateTime.now();
           final ms = endTime.difference(startTime).inMilliseconds;
           
           if (mounted) {
              setState(() {
-                _fpsText = "Inferencia: ${ms}ms";
-                _currentDefectMap = result; // Actualizar mapa para dibujado
+                if (result == null) {
+                   // Si es null, quizás el modelo no está listo o error
+                   if (_inferenceService.isReady) {
+                      _fpsText = "Error en Inferencia ($ms ms)";
+                   } else {
+                      _fpsText = "Esperando modelo...";
+                   }
+                } else {
+                   _fpsText = "Inf: ${ms}ms";
+                   _currentDefectMap = result;
+                }
              });
           }
           _isDetecting = false;
+        }).catchError((e) {
+           _log("Error en loop de inferencia: $e");
+           _isDetecting = false;
+           if (mounted) {
+             setState(() { _fpsText = "Error: Ver Logs"; });
+           }
         });
       });
+      _log("Stream de imágenes iniciado.");
       
     } catch (e) {
-      print("Error cámara: $e");
+      _log("Excepción al iniciar cámara: $e");
     }
   }
 
@@ -105,9 +164,6 @@ class _CameraScreenState extends State<CameraScreen> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    // Calcular escala para el overlay
-    final size = MediaQuery.of(context).size;
-    
     return Scaffold(
       body: Stack(
         fit: StackFit.expand,
@@ -115,7 +171,7 @@ class _CameraScreenState extends State<CameraScreen> {
           // 1. Cámara
           CameraPreview(_controller!),
           
-          // 2. Overlay de Defectos (CustomPainter)
+          // 2. Overlay de Defectos
           if (_currentDefectMap != null)
              Positioned.fill(
                child: CustomPaint(
@@ -126,17 +182,28 @@ class _CameraScreenState extends State<CameraScreen> {
                ),
              ),
           
-          // 3. UI Info
+          // 3. UI Info (Click para Logs)
           Positioned(
             top: 40,
             left: 20,
-            child: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.black54,
-                borderRadius: BorderRadius.circular(8)
+            child: GestureDetector(
+              onTap: _showLogs,
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.greenAccent)
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.bug_report, color: Colors.greenAccent, size: 16),
+                    const SizedBox(width: 8),
+                    Text(_fpsText, style: const TextStyle(color: Colors.greenAccent, fontSize: 16, fontWeight: FontWeight.bold)),
+                  ],
+                ),
               ),
-              child: Text(_fpsText, style: const TextStyle(color: Colors.greenAccent, fontSize: 16, fontWeight: FontWeight.bold)),
             ),
           ),
           
@@ -162,7 +229,7 @@ class _CameraScreenState extends State<CameraScreen> {
                             activeColor: Colors.redAccent,
                             onChanged: (v) {
                                sensitivity.value = v;
-                               setState((){}); // Redibujar painter
+                               setState((){}); 
                             },
                           ),
                         ),
@@ -188,7 +255,6 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 }
 
-// Pintor de Defectos
 class DefectPainter extends CustomPainter {
   final List<double> heatmap;
   final double sensitivity;
@@ -200,28 +266,18 @@ class DefectPainter extends CustomPainter {
     final paint = Paint()
       ..color = Colors.red.withOpacity(0.6)
       ..style = PaintingStyle.fill;
-
-    // El heatmap es 512x512. La pantalla puede ser diferente.
-    // Dibujamos "pixeles" rojos donde heatmap[i] > sensitivity
-    // Optimización: Dibujar rects agrupados sería mejor, pero punto a punto es más fácil de implementar ahora.
     
-    // Factor de escala (asumiendo que la cámara llena la pantalla o aspect ratio similar)
+    // Asumimos salida 512x512
     final double scaleX = size.width / 512;
     final double scaleY = size.height / 512;
-
-    // Umbral
     final double threshold = sensitivity; 
     
-    // Paso de renderizado (para no matar la UI, dibujamos cada 4 pixeles o similar si es muy lento)
-    // Pero intentemos dibujar todo o bloques 2x2.
-    
+    // Optimización: Dibujar 1 de cada 4 pixels para rendimiento
     for (int y = 0; y < 512; y += 4) {
       for (int x = 0; x < 512; x += 4) {
         final int index = y * 512 + x;
         if (index < heatmap.length) {
-          final double val = heatmap[index];
-          if (val > threshold) {
-            // Dibujar bloque rojo 4x4
+          if (heatmap[index] > threshold) {
             canvas.drawRect(
               Rect.fromLTWH(x * scaleX, y * scaleY, 4 * scaleX, 4 * scaleY),
               paint
