@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart';
 import '../globals.dart';
 import '../services/inference_service.dart';
 
@@ -19,125 +18,260 @@ class _CameraScreenState extends State<CameraScreen> {
   List<double>? _currentDefectMap;
   final StringBuffer _logs = StringBuffer();
 
+  // Snapshot de la config activa (la que se usó al cargar el modelo)
+  int _activeResolution = selectedResolution.value;
+  bool _activeNpu = useNpu.value;
+
   @override
   void initState() {
     super.initState();
-    _inferenceService.onLog = _log; // Conectar logs
-    
-    _log("Iniciando CameraScreen (Split View)...");
+    _inferenceService.onLog = _log;
+    _log("Iniciando cámara...");
     _initCamera();
     if (selectedModelPath != null) {
       _loadModel();
     } else {
-      _log("Advertencia: No hay modelo seleccionado.");
+      _log("Advertencia: no hay modelo seleccionado.");
     }
   }
 
   void _log(String msg) {
     print(msg);
-    _logs.writeln("${DateTime.now().hour}:${DateTime.now().minute}:${DateTime.now().second} - $msg");
-  }
-
-  void _showLogs() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("Logs de Depuración"),
-        content: SingleChildScrollView(
-          child: Text(_logs.toString(), style: const TextStyle(fontSize: 12)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("Cerrar"),
-          ),
-          TextButton(
-            onPressed: () {
-              setState(() { _logs.clear(); });
-              Navigator.pop(ctx);
-            },
-            child: const Text("Limpiar"),
-          )
-        ],
-      ),
-    );
+    if (mounted) {
+      setState(() {
+        _logs.writeln(
+          "${DateTime.now().hour.toString().padLeft(2, '0')}:"
+          "${DateTime.now().minute.toString().padLeft(2, '0')}:"
+          "${DateTime.now().second.toString().padLeft(2, '0')} — $msg",
+        );
+      });
+    }
   }
 
   Future<void> _loadModel() async {
-    _log("Cargando modelo desde: $selectedModelPath");
+    _log("Cargando modelo [res=${selectedResolution.value}px, "
+        "npu=${useNpu.value}]...");
     try {
-      await _inferenceService.loadModel(selectedModelPath!);
-      _log("Modelo cargado correctamente.");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Modelo cargado correctamente")),
-        );
-      }
+      await _inferenceService.loadModel(
+        selectedModelPath!,
+        useNpu: useNpu.value,
+      );
+      _activeResolution = selectedResolution.value;
+      _activeNpu = useNpu.value;
+      if (mounted) setState(() {});
+      _log("Listo. Dispositivo activo: ${_inferenceService.npuActive ? 'NPU (NNAPI)' : 'CPU'}");
     } catch (e) {
       _log("Error fatal cargando modelo: $e");
     }
   }
 
   Future<void> _initCamera() async {
-    _log("Inicializando cámara...");
     if (cameras.isEmpty) {
-      _log("Error: Lista de cámaras vacía.");
+      _log("Error: no hay cámaras disponibles.");
       return;
     }
 
     _controller = CameraController(
       cameras[0],
-      ResolutionPreset.high, // 720p mínimo
+      ResolutionPreset.high,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.yuv420,
     );
 
     try {
       await _controller!.initialize();
-      _log("Cámara inicializada.");
       if (!mounted) return;
       setState(() {});
 
       _controller!.startImageStream((image) {
         if (_isDetecting) return;
         _isDetecting = true;
-        
+
         final startTime = DateTime.now();
-        
-        _inferenceService.runInference(image).then((result) {
-          final endTime = DateTime.now();
-          final ms = endTime.difference(startTime).inMilliseconds;
-          
+        final int res = _activeResolution;
+
+        _inferenceService.runInference(image, resolution: res).then((result) {
+          final ms = DateTime.now().difference(startTime).inMilliseconds;
           if (mounted) {
-             setState(() {
-                if (result == null) {
-                   if (_inferenceService.isReady) {
-                      // Solo mostrar error si pasa mucho tiempo, para no flasear
-                   } else {
-                      _fpsText = "Esperando modelo...";
-                   }
-                } else {
-                   _fpsText = "Inferencia: ${ms}ms";
-                   _currentDefectMap = result;
-                }
-             });
+            setState(() {
+              if (result != null) {
+                _fpsText =
+                    "${ms}ms  |  ${res}px  |  ${_inferenceService.npuActive ? 'NPU' : 'CPU'}";
+                _currentDefectMap = result;
+              } else if (!_inferenceService.isReady) {
+                _fpsText = "Esperando modelo...";
+              }
+            });
           }
           _isDetecting = false;
         }).catchError((e) {
-           _log("Error en loop: $e");
-           _isDetecting = false;
+          _log("Error en stream: $e");
+          _isDetecting = false;
         });
       });
-      _log("Stream de imágenes iniciado.");
-      
     } catch (e) {
-      _log("Excepción al iniciar cámara: $e");
+      _log("Error inicializando cámara: $e");
     }
+  }
+
+  void _showLogs() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Logs"),
+        content: SingleChildScrollView(
+          child: Text(_logs.toString(), style: const TextStyle(fontSize: 11)),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cerrar")),
+          TextButton(
+            onPressed: () {
+              setState(() => _logs.clear());
+              Navigator.pop(ctx);
+            },
+            child: const Text("Limpiar"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSettings() {
+    // Valores temporales dentro del sheet
+    int tempRes = selectedResolution.value;
+    bool tempNpu = useNpu.value;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.grey[900],
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) => Padding(
+          padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Handle
+              Center(
+                child: Container(
+                  width: 40, height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white30,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                "Configuración de inferencia",
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              const SizedBox(height: 20),
+
+              // Resolución
+              const Text("Resolución del modelo",
+                  style: TextStyle(color: Colors.white70)),
+              const SizedBox(height: 4),
+              const Text(
+                "Debe coincidir con la entrada del .onnx cargado",
+                style: TextStyle(color: Colors.white38, fontSize: 11),
+              ),
+              const SizedBox(height: 10),
+              SegmentedButton<int>(
+                segments: const [
+                  ButtonSegment(value: 128, label: Text("128 px")),
+                  ButtonSegment(value: 256, label: Text("256 px")),
+                  ButtonSegment(value: 512, label: Text("512 px")),
+                ],
+                selected: {tempRes},
+                onSelectionChanged: (s) =>
+                    setSheetState(() => tempRes = s.first),
+              ),
+              const SizedBox(height: 20),
+
+              // NPU toggle
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text("Usar NPU (MediaTek APU 790)"),
+                subtitle: Text(
+                  tempNpu
+                      ? "NNAPI — se intentará delegar al APU"
+                      : "CPU — compatible con todos los modelos",
+                  style: TextStyle(
+                    color: tempNpu ? Colors.tealAccent : Colors.white38,
+                    fontSize: 12,
+                  ),
+                ),
+                value: tempNpu,
+                activeColor: Colors.tealAccent,
+                onChanged: (v) => setSheetState(() => tempNpu = v),
+              ),
+              const SizedBox(height: 8),
+
+              // Advertencia si cambió NPU/res
+              if (tempRes != _activeResolution || tempNpu != _activeNpu)
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange.withOpacity(0.4)),
+                  ),
+                  child: const Row(children: [
+                    Icon(Icons.info_outline, color: Colors.orange, size: 16),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        "Se recargará el modelo al aplicar",
+                        style: TextStyle(color: Colors.orange, fontSize: 12),
+                      ),
+                    ),
+                  ]),
+                ),
+              const SizedBox(height: 16),
+
+              // Botones
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text("Cancelar"),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      // Aplicar cambios globales
+                      selectedResolution.value = tempRes;
+                      useNpu.value = tempNpu;
+                      // Recargar modelo si algo cambió
+                      if (tempRes != _activeResolution ||
+                          tempNpu != _activeNpu) {
+                        _currentDefectMap = null;
+                        _loadModel();
+                      }
+                    },
+                    child: const Text("Aplicar"),
+                  ),
+                ),
+              ]),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   @override
   void dispose() {
     _controller?.dispose();
+    _inferenceService.dispose();
     super.dispose();
   }
 
@@ -149,167 +283,212 @@ class _CameraScreenState extends State<CameraScreen> {
 
     return Scaffold(
       backgroundColor: Colors.black,
-      body: SafeArea( // FIX: Evita que la barra de estado tape botones (Notch/Status Bar)
+      body: SafeArea(
         child: Column(
           children: [
-            // --- VISTA SUPERIOR: CÁMARA REAL ---
+            // ── VISTA SUPERIOR: CÁMARA REAL ──────────────────────
             Expanded(
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  CameraPreview(_controller!), // Se verá recortado por SafeArea, pero seguro
+                  CameraPreview(_controller!),
                   Positioned(
                     top: 10, left: 10,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      color: Colors.black54,
-                      child: const Text("Cámara Real", style: TextStyle(color: Colors.white)),
+                    child: _Chip(text: "Cámara Real"),
+                  ),
+                  // Botón configuración
+                  Positioned(
+                    top: 6, right: 52,
+                    child: IconButton(
+                      icon: const Icon(Icons.tune, color: Colors.white70),
+                      tooltip: "Configuración",
+                      onPressed: _showSettings,
                     ),
                   ),
-                  // Botón Logs (Más grande y accesible)
+                  // Botón logs
                   Positioned(
-                    top: 10, right: 10,
-                    child: GestureDetector(
-                      onTap: _showLogs,
-                      child: Container(
-                        padding: const EdgeInsets.all(12), // Zona táctil más grande
-                        color: Colors.transparent, // Necesario para detectar tap en padding
-                        child: const Icon(Icons.bug_report, color: Colors.greenAccent, size: 32),
-                      ),
+                    top: 6, right: 6,
+                    child: IconButton(
+                      icon: const Icon(Icons.bug_report,
+                          color: Colors.greenAccent),
+                      tooltip: "Logs",
+                      onPressed: _showLogs,
                     ),
-                  )
+                  ),
                 ],
               ),
             ),
-          
-          // --- DIVISOR ---
-          Container(height: 2, color: Colors.white30),
-          
-          // --- VISTA INFERIOR: MAPA DE DEFECTOS (HEATMAP) ---
-          Expanded(
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                // Fondo negro o gris oscuro para resaltar el rojo
-                Container(color: Colors.grey[900]),
-                
-                if (_currentDefectMap != null)
-                   CustomPaint(
-                     painter: DefectPainter(
-                       heatmap: _currentDefectMap!,
-                       sensitivity: sensitivity.value,
-                     ),
-                   )
-                else
-                   Center(
-                     child: Text(
-                       _fpsText,
-                       style: const TextStyle(color: Colors.white54),
-                     ),
-                   ),
 
-                Positioned(
-                  top: 10, left: 10,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    color: Colors.black54,
-                    child: const Text("Mapa de Defectos (IA)", style: TextStyle(color: Colors.redAccent)),
-                  ),
-                ),
-                
-                // Info FPS Overlay en la vista de abajo también
-                if (_currentDefectMap != null)
+            Container(height: 2, color: Colors.white24),
+
+            // ── VISTA INFERIOR: MAPA DE DEFECTOS ─────────────────
+            Expanded(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Container(color: Colors.grey[900]),
+                  if (_currentDefectMap != null)
+                    CustomPaint(
+                      painter: DefectPainter(
+                        heatmap: _currentDefectMap!,
+                        sensitivity: sensitivity.value,
+                        resolution: _activeResolution,
+                      ),
+                    )
+                  else
+                    Center(
+                      child: Text(
+                        _fpsText,
+                        style: const TextStyle(color: Colors.white38),
+                      ),
+                    ),
                   Positioned(
-                    bottom: 10, right: 10,
-                    child: Text(_fpsText, style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+                    top: 10, left: 10,
+                    child: _Chip(
+                      text: "Mapa de Defectos (IA)",
+                      color: Colors.redAccent,
+                    ),
                   ),
-              ],
-            ),
-          ),
-          
-          // --- CONTROLES (ABAJO DEL TODO) ---
-          Container(
-            padding: const EdgeInsets.all(16),
-            color: Colors.black,
-            child: Column(
-              children: [
-                const Text("Sensibilidad", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                ValueListenableBuilder<double>(
-                  valueListenable: sensitivity,
-                  builder: (context, value, child) {
-                    return Row(
-                      children: [
-                        Expanded(
-                          child: Slider(
-                            value: value,
-                            min: 0.0,
-                            max: 1.0,
-                            activeColor: Colors.redAccent,
-                            onChanged: (v) {
-                               sensitivity.value = v;
-                               setState((){}); 
-                            },
-                          ),
+                  if (_currentDefectMap != null)
+                    Positioned(
+                      bottom: 8, right: 10,
+                      child: Text(
+                        _fpsText,
+                        style: const TextStyle(
+                          color: Colors.greenAccent,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
                         ),
-                        Text(value.toStringAsFixed(2), style: const TextStyle(color: Colors.white)),
-                      ],
-                    );
-                  },
-                ),
-                const SizedBox(height: 10),
-                FloatingActionButton(
-                  backgroundColor: Colors.red,
-                  mini: true,
-                  child: const Icon(Icons.close),
-                  onPressed: () => Navigator.pop(context),
-                )
-              ],
+                      ),
+                    ),
+                ],
+              ),
             ),
-          )
-        ],
-      ),
+
+            // ── CONTROLES INFERIORES ──────────────────────────────
+            Container(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              color: Colors.black,
+              child: Column(
+                children: [
+                  Row(children: [
+                    const Text("Sensibilidad",
+                        style: TextStyle(color: Colors.white70, fontSize: 13)),
+                    const Spacer(),
+                    ValueListenableBuilder<double>(
+                      valueListenable: sensitivity,
+                      builder: (_, v, __) => Text(
+                        v.toStringAsFixed(2),
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    ),
+                  ]),
+                  ValueListenableBuilder<double>(
+                    valueListenable: sensitivity,
+                    builder: (_, v, __) => Slider(
+                      value: v,
+                      min: 0.0,
+                      max: 1.0,
+                      activeColor: Colors.redAccent,
+                      onChanged: (val) {
+                        sensitivity.value = val;
+                        setState(() {});
+                      },
+                    ),
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      // Info del modo activo
+                      Text(
+                        "${_activeResolution}px · ${_inferenceService.npuActive ? 'NPU' : 'CPU'}",
+                        style: TextStyle(
+                          color: _inferenceService.npuActive
+                              ? Colors.tealAccent
+                              : Colors.white38,
+                          fontSize: 12,
+                        ),
+                      ),
+                      FloatingActionButton.small(
+                        backgroundColor: Colors.red,
+                        onPressed: () => Navigator.pop(context),
+                        child: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
+// ── Widget auxiliar para etiquetas de overlay ────────────────────────────────
+
+class _Chip extends StatelessWidget {
+  final String text;
+  final Color color;
+  const _Chip({required this.text, this.color = Colors.white70});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.black54,
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(text, style: TextStyle(color: color, fontSize: 12)),
+      );
+}
+
+// ── Painter del heatmap ──────────────────────────────────────────────────────
+
 class DefectPainter extends CustomPainter {
   final List<double> heatmap;
   final double sensitivity;
+  final int resolution;
 
-  DefectPainter({required this.heatmap, required this.sensitivity});
+  const DefectPainter({
+    required this.heatmap,
+    required this.sensitivity,
+    required this.resolution,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
       ..color = Colors.red
       ..style = PaintingStyle.fill;
-    
-    // Asumimos salida 512x512
-    // IMPORTANTE: Escalar al tamaño del widget (Expanded inferior)
-    final double scaleX = size.width / 512;
-    final double scaleY = size.height / 512;
-    final double threshold = sensitivity; 
-    
-    // Optimización: Dibujar 1 de cada 4 pixels
-    for (int y = 0; y < 512; y += 4) {
-      for (int x = 0; x < 512; x += 4) {
-        final int index = y * 512 + x;
-        if (index < heatmap.length) {
-          if (heatmap[index] > threshold) {
-            // Dibujar rectángulo proporcional
-            canvas.drawRect(
-              Rect.fromLTWH(x * scaleX, y * scaleY, 4 * scaleX + 1, 4 * scaleY + 1), // +1 para evitar huecos
-              paint
-            );
-          }
+
+    final double scaleX = size.width / resolution;
+    final double scaleY = size.height / resolution;
+    // Paso de pixel: más detalle a 128/256, optimización de render a 512
+    final int step = resolution <= 256 ? 2 : 4;
+
+    for (int y = 0; y < resolution; y += step) {
+      for (int x = 0; x < resolution; x += step) {
+        final int index = y * resolution + x;
+        if (index < heatmap.length && heatmap[index] > sensitivity) {
+          canvas.drawRect(
+            Rect.fromLTWH(
+              x * scaleX,
+              y * scaleY,
+              step * scaleX + 1,
+              step * scaleY + 1,
+            ),
+            paint,
+          );
         }
       }
     }
   }
 
   @override
-  bool shouldRepaint(covariant DefectPainter oldDelegate) {
-     return oldDelegate.heatmap != heatmap || oldDelegate.sensitivity != sensitivity;
-  }
+  bool shouldRepaint(covariant DefectPainter old) =>
+      old.heatmap != heatmap ||
+      old.sensitivity != sensitivity ||
+      old.resolution != resolution;
 }
