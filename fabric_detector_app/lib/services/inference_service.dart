@@ -48,14 +48,16 @@ class InferenceService {
 
       if (useNpu) {
         try {
-          options.addDelegate(NnApiDelegate());
+          // NnApiDelegate no está en la API pública de tflite_flutter 0.10.x.
+          // GpuDelegateV2 usa el Mali-G615 del Dimensity 8300 Ultra.
+          options.addDelegate(GpuDelegateV2());
           _npuActive = true;
-          _log("✓ NNAPI activado — NPU MediaTek APU 790");
+          _log("✓ GPU Delegate activado — Mali-G615 (Dimensity 8300 Ultra)");
         } catch (e) {
-          _log("✗ NNAPI no disponible: $e → CPU");
+          _log("✗ GPU Delegate no disponible: $e → CPU");
         }
       } else {
-        _log("Modo CPU seleccionado");
+        _log("Modo CPU (4 hilos)");
       }
 
       _tfliteInterpreter = Interpreter.fromFile(File(path), options: options);

@@ -182,10 +182,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       valueListenable: useNpu,
                       builder: (_, npu, __) => SwitchListTile(
                         contentPadding: EdgeInsets.zero,
-                        title: const Text("Usar NPU (MediaTek APU 790)"),
+                        title: const Text("Aceleración GPU/NPU"),
                         subtitle: Text(
                           npu
-                              ? "NNAPI activo — se intentará delegar al APU"
+                              ? "GPU Delegate activo (Mali-G615)"
                               : "CPU — compatible con todos los modelos",
                           style: TextStyle(
                             color: npu ? Colors.tealAccent : Colors.white38,

@@ -59,7 +59,7 @@ class _CameraScreenState extends State<CameraScreen> {
       _activeResolution = selectedResolution.value;
       _activeNpu = useNpu.value;
       if (mounted) setState(() {});
-      _log("Listo. Dispositivo activo: ${_inferenceService.npuActive ? 'NPU (NNAPI)' : 'CPU'}");
+      _log("Listo. Dispositivo activo: ${_inferenceService.npuActive ? 'GPU (Mali-G615)' : 'CPU'}");
     } catch (e) {
       _log("Error fatal cargando modelo: $e");
     }
@@ -196,10 +196,10 @@ class _CameraScreenState extends State<CameraScreen> {
               // NPU toggle
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text("Usar NPU (MediaTek APU 790)"),
+                title: const Text("Aceleración GPU/NPU"),
                 subtitle: Text(
                   tempNpu
-                      ? "NNAPI — se intentará delegar al APU"
+                      ? "GPU Delegate activo (Mali-G615)"
                       : "CPU — compatible con todos los modelos",
                   style: TextStyle(
                     color: tempNpu ? Colors.tealAccent : Colors.white38,
