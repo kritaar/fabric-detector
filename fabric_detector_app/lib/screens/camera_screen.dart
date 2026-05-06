@@ -56,6 +56,14 @@ class _CameraScreenState extends State<CameraScreen> {
         selectedModelPath!,
         useNpu: useNpu.value,
       );
+
+      // Auto-ajustar resolución si el modelo la reportó
+      final detected = _inferenceService.detectedResolution;
+      if (detected != null && detected != selectedResolution.value) {
+        selectedResolution.value = detected;
+        _log("⚠ Resolución ajustada a ${detected}px para coincidir con el modelo");
+      }
+
       _activeResolution = selectedResolution.value;
       _activeNpu = useNpu.value;
       if (mounted) setState(() {});

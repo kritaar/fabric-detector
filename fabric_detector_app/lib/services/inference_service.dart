@@ -42,32 +42,31 @@ class InferenceService {
     }
   }
 
-  Future<void> _loadTflite(String path, {bool useNpu = false}) async {
-    try {
-      final options = InterpreterOptions()..threads = 4;
+  int? detectedResolution; // Resolución real del modelo cargado
 
-      if (useNpu) {
-        try {
-          // NnApiDelegate no está en la API pública de tflite_flutter 0.10.x.
-          // GpuDelegateV2 usa el Mali-G615 del Dimensity 8300 Ultra.
-          options.addDelegate(GpuDelegateV2());
-          _npuActive = true;
-          _log("✓ GPU Delegate activado — Mali-G615 (Dimensity 8300 Ultra)");
-        } catch (e) {
-          _log("✗ GPU Delegate no disponible: $e → CPU");
-        }
-      } else {
-        _log("Modo CPU (4 hilos)");
-      }
+  Future<void> _loadTflite(String path, {bool useNpu = false}) async {
+    detectedResolution = null;
+    try {
+      // GpuDelegateV2 no soporta ConvTranspose2d (ops de nuestro modelo).
+      // Se usa CPU con 4 hilos. NNAPI puede activarse automáticamente por
+      // el runtime de TFLite si el dispositivo y el modelo lo soportan.
+      final options = InterpreterOptions()..threads = 4;
+      _log("Modo CPU (4 hilos) — NNAPI auto si compatible");
 
       _tfliteInterpreter = Interpreter.fromFile(File(path), options: options);
       _tfliteInterpreter!.allocateTensors();
 
+      // Auto-detectar resolución desde la forma de entrada del modelo [1,H,W,3]
       final inShape = _tfliteInterpreter!.getInputTensor(0).shape;
       final outShape = _tfliteInterpreter!.getOutputTensor(0).shape;
+
+      if (inShape.length >= 3) {
+        detectedResolution = inShape[1]; // NHWC: [1, H, W, 3] → H
+        _log("Resolución detectada: ${detectedResolution}px");
+      }
+
       _isReady = true;
       _log("TFLite cargado OK → entrada: $inShape  salida: $outShape");
-      _log("Dispositivo: ${_npuActive ? 'NPU (NNAPI)' : 'CPU'}");
     } catch (e) {
       _log("Error cargando TFLite: $e");
       _isReady = false;
@@ -125,19 +124,28 @@ class InferenceService {
   Future<List<double>?> _runTflite(YUVData yuvData, int resolution) async {
     if (_tfliteInterpreter == null) return null;
 
+    // Usar resolución real del modelo si fue detectada
+    final effectiveRes = detectedResolution ?? resolution;
+
     // Preprocesar en isolate → NHWC [1, H, W, 3]
     final inputFloats = await compute(
       _convertYuvIsolate,
-      InferenceParams(yuv: yuvData, resolution: resolution, nhwc: true),
+      InferenceParams(yuv: yuvData, resolution: effectiveRes, nhwc: true),
     );
 
-    final inputData = Float32List.fromList(inputFloats);
-    final outputData = Float32List(resolution * resolution); // [1, H, W, 1] aplanado
-
     try {
-      _tfliteInterpreter!.run(inputData, outputData);
+      // API de bajo nivel para evitar "Bad state: failed precondition" de run()
+      final inputTensor = _tfliteInterpreter!.getInputTensor(0);
+      final inputBytes = Float32List.fromList(inputFloats).buffer.asUint8List();
+      inputTensor.data.setRange(0, inputBytes.length, inputBytes);
+
+      _tfliteInterpreter!.invoke();
+
+      final outputTensor = _tfliteInterpreter!.getOutputTensor(0);
+      final outputFloats = outputTensor.data.buffer.asFloat32List();
+
       // Aplicar sigmoid → valores [0, 1]
-      return outputData.map((v) => 1.0 / (1.0 + exp(-v))).toList();
+      return outputFloats.map((v) => 1.0 / (1.0 + exp(-v))).toList();
     } catch (e) {
       _log("Error TFLite inferencia: $e");
       return null;
