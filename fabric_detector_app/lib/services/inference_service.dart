@@ -6,67 +6,57 @@ import 'package:onnxruntime/onnxruntime.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:camera/camera.dart';
 
-/// Detecta el backend según la extensión del archivo.
 enum _Backend { onnx, tflite }
 
 class InferenceService {
-  // ONNX Runtime
   OrtSession? _onnxSession;
-
-  // TFLite
   Interpreter? _tfliteInterpreter;
 
   _Backend _backend = _Backend.onnx;
   bool _isReady = false;
   bool _npuActive = false;
+  int? detectedResolution;
 
   Function(String)? onLog;
 
   bool get isReady => _isReady;
   bool get npuActive => _npuActive;
 
-  // ── Carga del modelo ───────────────────────────────────────────────────────
+  // ── Carga ─────────────────────────────────────────────────────────────────
 
   Future<void> loadModel(String path, {bool useNpu = false}) async {
     _isReady = false;
     _npuActive = false;
+    detectedResolution = null;
     _onnxSession?.release();
     _tfliteInterpreter?.close();
 
     _backend = path.endsWith('.tflite') ? _Backend.tflite : _Backend.onnx;
-
     if (_backend == _Backend.tflite) {
-      await _loadTflite(path, useNpu: useNpu);
+      await _loadTflite(path);
     } else {
       await _loadOnnx(path, useNpu: useNpu);
     }
   }
 
-  int? detectedResolution; // Resolución real del modelo cargado
-
-  Future<void> _loadTflite(String path, {bool useNpu = false}) async {
-    detectedResolution = null;
+  Future<void> _loadTflite(String path) async {
     try {
-      // GpuDelegateV2 no soporta ConvTranspose2d (ops de nuestro modelo).
-      // Se usa CPU con 4 hilos. NNAPI puede activarse automáticamente por
-      // el runtime de TFLite si el dispositivo y el modelo lo soportan.
       final options = InterpreterOptions()..threads = 4;
-      _log("Modo CPU (4 hilos) — NNAPI auto si compatible");
-
       _tfliteInterpreter = Interpreter.fromFile(File(path), options: options);
       _tfliteInterpreter!.allocateTensors();
 
-      // Auto-detectar resolución desde la forma de entrada del modelo [1,H,W,3]
-      final inShape = _tfliteInterpreter!.getInputTensor(0).shape;
-      final outShape = _tfliteInterpreter!.getOutputTensor(0).shape;
+      final inTensor  = _tfliteInterpreter!.getInputTensor(0);
+      final outTensor = _tfliteInterpreter!.getOutputTensor(0);
 
-      if (inShape.length >= 3) {
-        detectedResolution = inShape[1]; // NHWC: [1, H, W, 3] → H
-        _log("Resolución detectada: ${detectedResolution}px");
+      // NHWC: [1, H, W, 3] → H es la resolución
+      if (inTensor.shape.length >= 3) {
+        detectedResolution = inTensor.shape[1];
       }
 
       _isReady = true;
-      _log("TFLite cargado OK → entrada: $inShape  salida: $outShape");
+      _log("TFLite OK → entrada: ${inTensor.shape} (${inTensor.type})"
+          "  salida: ${outTensor.shape} (${outTensor.type})");
+      _log("Resolución detectada: ${detectedResolution}px");
     } catch (e) {
       _log("Error cargando TFLite: $e");
       _isReady = false;
@@ -76,29 +66,19 @@ class InferenceService {
 
   Future<void> _loadOnnx(String path, {bool useNpu = false}) async {
     try {
-      final sessionOptions = OrtSessionOptions();
-
+      final opts = OrtSessionOptions();
       if (useNpu) {
         try {
-          (sessionOptions as dynamic).appendExecutionProvider_Nnapi(0);
+          (opts as dynamic).appendExecutionProvider_Nnapi(0);
           _npuActive = true;
-          _log("✓ NNAPI activado (ONNX Runtime)");
+          _log("✓ NNAPI activado");
         } catch (_) {
-          try {
-            (sessionOptions as dynamic).appendExecutionProvider('nnapi');
-            _npuActive = true;
-            _log("✓ NNAPI activado (ORT v2 API)");
-          } catch (e2) {
-            _log("✗ NNAPI no disponible: $e2 → CPU");
-          }
+          _log("NNAPI no disponible → CPU");
         }
-      } else {
-        _log("Modo CPU seleccionado");
       }
-
-      _onnxSession = OrtSession.fromFile(File(path), sessionOptions);
+      _onnxSession = OrtSession.fromFile(File(path), opts);
       _isReady = true;
-      _log("ONNX cargado OK: $path");
+      _log("ONNX OK: $path");
     } catch (e) {
       _log("Error cargando ONNX: $e");
       _isReady = false;
@@ -108,76 +88,125 @@ class InferenceService {
 
   // ── Inferencia ─────────────────────────────────────────────────────────────
 
-  Future<List<double>?> runInference(CameraImage image, {int resolution = 256}) async {
+  Future<List<double>?> runInference(CameraImage image,
+      {int resolution = 256}) async {
     if (!_isReady) return null;
 
-    final yuvData = YUVData.fromCameraImage(image, resolution);
+    final yuvData = YUVData.fromCameraImage(image);
     if (yuvData == null) return null;
 
+    final effectiveRes = detectedResolution ?? resolution;
+
     if (_backend == _Backend.tflite) {
-      return _runTflite(yuvData, resolution);
+      return _runTflite(yuvData, effectiveRes);
     } else {
-      return _runOnnx(yuvData, resolution);
+      return _runOnnx(yuvData, effectiveRes);
     }
   }
 
-  Future<List<double>?> _runTflite(YUVData yuvData, int resolution) async {
+  Future<List<double>?> _runTflite(YUVData yuvData, int res) async {
     if (_tfliteInterpreter == null) return null;
 
-    // Usar resolución real del modelo si fue detectada
-    final effectiveRes = detectedResolution ?? resolution;
-
-    // Preprocesar en isolate → NHWC [1, H, W, 3]
     final inputFloats = await compute(
       _convertYuvIsolate,
-      InferenceParams(yuv: yuvData, resolution: effectiveRes, nhwc: true),
+      InferenceParams(yuv: yuvData, resolution: res, nhwc: true),
     );
 
     try {
-      // API de bajo nivel para evitar "Bad state: failed precondition" de run()
-      final inputTensor = _tfliteInterpreter!.getInputTensor(0);
-      final inputBytes = Float32List.fromList(inputFloats).buffer.asUint8List();
-      inputTensor.data.setRange(0, inputBytes.length, inputBytes);
+      final inTensor  = _tfliteInterpreter!.getInputTensor(0);
+      final outTensor = _tfliteInterpreter!.getOutputTensor(0);
+
+      // ── Escribir entrada según tipo del tensor ──────────────────────────
+      switch (inTensor.type) {
+        case TensorType.float32:
+          final bytes = Float32List.fromList(inputFloats).buffer.asUint8List();
+          inTensor.data.setRange(0, bytes.length, bytes);
+          break;
+        case TensorType.uint8:
+          final p = _quantParams(inTensor);
+          final buf = Uint8List(inputFloats.length);
+          for (int i = 0; i < inputFloats.length; i++) {
+            buf[i] = (inputFloats[i] / p.$1 + p.$2).round().clamp(0, 255);
+          }
+          inTensor.data.setRange(0, buf.length, buf);
+          break;
+        case TensorType.int8:
+          final p = _quantParams(inTensor);
+          final buf = Int8List(inputFloats.length);
+          for (int i = 0; i < inputFloats.length; i++) {
+            buf[i] = (inputFloats[i] / p.$1 + p.$2).round().clamp(-128, 127);
+          }
+          inTensor.data.setRange(0, buf.buffer.asUint8List().length,
+              buf.buffer.asUint8List());
+          break;
+        default:
+          _log("Tipo de entrada no soportado: ${inTensor.type}");
+          return null;
+      }
 
       _tfliteInterpreter!.invoke();
 
-      final outputTensor = _tfliteInterpreter!.getOutputTensor(0);
-      final outputFloats = outputTensor.data.buffer.asFloat32List();
-
-      // Aplicar sigmoid → valores [0, 1]
-      return outputFloats.map((v) => 1.0 / (1.0 + exp(-v))).toList();
+      // ── Leer salida según tipo del tensor ───────────────────────────────
+      switch (outTensor.type) {
+        case TensorType.float32:
+          // Modelo float32 → salida son logits → aplicar sigmoid
+          return outTensor.data.buffer
+              .asFloat32List()
+              .map((v) => 1.0 / (1.0 + exp(-v)))
+              .toList();
+        case TensorType.uint8:
+          final p = _quantParams(outTensor);
+          return outTensor.data.buffer
+              .asUint8List()
+              .map((q) => ((q - p.$2) * p.$1).clamp(0.0, 1.0))
+              .toList();
+        case TensorType.int8:
+          final p = _quantParams(outTensor);
+          return outTensor.data.buffer
+              .asInt8List()
+              .map((q) => ((q - p.$2) * p.$1).clamp(0.0, 1.0))
+              .toList();
+        default:
+          _log("Tipo de salida no soportado: ${outTensor.type}");
+          return null;
+      }
     } catch (e) {
       _log("Error TFLite inferencia: $e");
       return null;
     }
   }
 
+  /// Devuelve (scale, zeroPoint) con fallback seguro si el modelo no tiene params.
+  (double, int) _quantParams(Tensor tensor) {
+    try {
+      return (tensor.params.scale, tensor.params.zeroPoint);
+    } catch (_) {
+      return (1.0 / 255.0, 0);
+    }
+  }
+
   Future<List<double>?> _runOnnx(YUVData yuvData, int resolution) async {
     if (_onnxSession == null) return null;
 
-    // Preprocesar en isolate → NCHW [1, 3, H, W]
     final inputFloats = await compute(
       _convertYuvIsolate,
       InferenceParams(yuv: yuvData, resolution: resolution, nhwc: false),
     );
 
     final inputOrt = OrtValueTensor.createTensorWithDataList(
-      inputFloats,
-      [1, 3, resolution, resolution],
-    );
+        inputFloats, [1, 3, resolution, resolution]);
     final runOptions = OrtRunOptions();
-    final inputs = {'input': inputOrt};
 
     try {
-      final outputs = await _onnxSession!.runAsync(runOptions, inputs);
-      final outputTensor = outputs?[0];
-      if (outputTensor == null) return null;
+      final outputs =
+          await _onnxSession!.runAsync(runOptions, {'input': inputOrt});
+      final outTensor = outputs?[0];
+      if (outTensor == null) return null;
 
-      final outputData = outputTensor.value as List<List<List<List<double>>>>;
+      final data = outTensor.value as List<List<List<List<double>>>>;
       inputOrt.release();
       runOptions.release();
-
-      return outputData[0][0].expand((row) => row).toList();
+      return data[0][0].expand((row) => row).toList();
     } catch (e) {
       _log("Error ONNX inferencia: $e");
       return null;
@@ -198,17 +227,14 @@ class InferenceService {
 class InferenceParams {
   final YUVData yuv;
   final int resolution;
-  final bool nhwc; // true → TFLite [1,H,W,3], false → ONNX [1,3,H,W]
-  const InferenceParams({
-    required this.yuv,
-    required this.resolution,
-    this.nhwc = false,
-  });
+  final bool nhwc;
+  const InferenceParams(
+      {required this.yuv, required this.resolution, this.nhwc = false});
 }
 
 class YUVData {
-  final int width;
-  final int height;
+  final int width;   // sensor width (landscape), e.g. 1280
+  final int height;  // sensor height (landscape), e.g. 720
   final Uint8List planeY;
   final Uint8List planeU;
   final Uint8List planeV;
@@ -227,10 +253,10 @@ class YUVData {
     required this.uvPixelStride,
   });
 
-  static YUVData? fromCameraImage(CameraImage image, int resolution) {
-    if (image.planes.isEmpty) return null;
-    if (image.width < resolution || image.height < resolution) return null;
-
+  static YUVData? fromCameraImage(CameraImage image) {
+    if (image.planes.isEmpty || image.width < 64 || image.height < 64) {
+      return null;
+    }
     return YUVData(
       width: image.width,
       height: image.height,
@@ -244,47 +270,65 @@ class YUVData {
   }
 }
 
-// ── Función top-level para compute() ─────────────────────────────────────────
+// ── Conversión YUV → RGB con corrección de rotación y escala completa ─────────
+//
+// El sensor Android entrega frames en landscape (width × height, p.ej. 1280×720).
+// El CameraPreview rota 90°CW para mostrar portrait.  Nosotros reproducimos
+// esa misma transformación para que el heatmap coincida pixel a pixel con la vista.
+//
+// Transformación portrait→sensor (sensorOrientation=90° CW, back camera):
+//   sensor_x = portrait_row
+//   sensor_y = sensorH - 1 - portrait_col
+//
+// Además, en lugar de center-crop fijo, escalamos el encuadre completo de la
+// cámara (squareSize × squareSize en portrait) al tamaño del modelo (res × res).
+// squareSize = sensorH = portrait_W (el lado corto del portrait).
+// El recorte vertical en portrait se centra: portrait_row ∈ [rowOffset, rowOffset+squareSize).
 
 List<double> _convertYuvIsolate(InferenceParams params) {
-  final int res = params.resolution;
+  final int res  = params.resolution;
   final YUVData d = params.yuv;
 
-  final int startX = (d.width - res) ~/ 2;
-  final int startY = (d.height - res) ~/ 2;
+  final int sensorW = d.width;   // 1280
+  final int sensorH = d.height;  // 720
+
+  // Tamaño del cuadrado en portrait (portrait_W = sensorH)
+  final int squareSize  = sensorH;
+  // Offset en portrait_row para centrar el crop vertical
+  final int rowOffset   = (sensorW - squareSize) ~/ 2;
 
   final floats = List<double>.filled(3 * res * res, 0.0);
 
-  for (int y = 0; y < res; y++) {
-    for (int x = 0; x < res; x++) {
-      final int imgX = startX + x;
-      final int imgY = startY + y;
+  for (int oy = 0; oy < res; oy++) {
+    for (int ox = 0; ox < res; ox++) {
+      // Mapear pixel de salida (ox,oy) al cuadrado portrait
+      final double pCol = ox * squareSize / res;          // portrait col [0..squareSize)
+      final double pRow = oy * squareSize / res + rowOffset; // portrait row + offset
 
-      final int indexY = imgY * d.yRowStride + imgX;
-      final int yp = d.planeY[indexY];
+      // Transformar portrait→sensor (rotación 90°CW del sensor)
+      final int imgX = pRow.toInt().clamp(0, sensorW - 1);          // sensor col
+      final int imgY = (sensorH - 1 - pCol.toInt()).clamp(0, sensorH - 1); // sensor row
 
-      final int uvIdx =
-          (imgY >> 1) * d.uvRowStride + (imgX >> 1) * d.uvPixelStride;
-      final int up = d.planeU[uvIdx];
-      final int vp = d.planeV[uvIdx];
+      // Leer YUV
+      final int yp  = d.planeY[imgY * d.yRowStride + imgX];
+      final int uvIdx = (imgY >> 1) * d.uvRowStride + (imgX >> 1) * d.uvPixelStride;
+      final int up  = d.planeU[uvIdx];
+      final int vp  = d.planeV[uvIdx];
 
-      // BT.601 YUV → RGB
-      final double rf = (yp + 1.402 * (vp - 128)).clamp(0, 255) / 255.0;
+      // BT.601 YUV → RGB normalizado [0,1]
+      final double rf = (yp + 1.402   * (vp - 128)).clamp(0, 255) / 255.0;
       final double gf = (yp - 0.344136 * (up - 128) - 0.714136 * (vp - 128))
-              .clamp(0, 255) /
-          255.0;
-      final double bf = (yp + 1.772 * (up - 128)).clamp(0, 255) / 255.0;
+                            .clamp(0, 255) / 255.0;
+      final double bf = (yp + 1.772   * (up - 128)).clamp(0, 255) / 255.0;
 
       if (params.nhwc) {
-        // NHWC: [y, x, c] → índice = y*res*3 + x*3 + c
-        floats[y * res * 3 + x * 3 + 0] = rf;
-        floats[y * res * 3 + x * 3 + 1] = gf;
-        floats[y * res * 3 + x * 3 + 2] = bf;
+        floats[oy * res * 3 + ox * 3    ] = rf;
+        floats[oy * res * 3 + ox * 3 + 1] = gf;
+        floats[oy * res * 3 + ox * 3 + 2] = bf;
       } else {
-        // NCHW: [c, y, x] → índice = c*res*res + y*res + x
-        floats[0 * res * res + y * res + x] = rf;
-        floats[1 * res * res + y * res + x] = gf;
-        floats[2 * res * res + y * res + x] = bf;
+        floats[            oy * res + ox] = rf;
+        floats[res * res + oy * res + ox] = gf;
+        floats[2 * res * res + oy * res + ox] = bf;
       }
     }
   }
