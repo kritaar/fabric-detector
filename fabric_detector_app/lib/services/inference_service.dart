@@ -1,84 +1,155 @@
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:onnxruntime/onnxruntime.dart';
+import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:camera/camera.dart';
 
+/// Detecta el backend según la extensión del archivo.
+enum _Backend { onnx, tflite }
+
 class InferenceService {
-  OrtSession? _session;
+  // ONNX Runtime
+  OrtSession? _onnxSession;
+
+  // TFLite
+  Interpreter? _tfliteInterpreter;
+
+  _Backend _backend = _Backend.onnx;
   bool _isReady = false;
   bool _npuActive = false;
+
   Function(String)? onLog;
 
   bool get isReady => _isReady;
   bool get npuActive => _npuActive;
 
+  // ── Carga del modelo ───────────────────────────────────────────────────────
+
   Future<void> loadModel(String path, {bool useNpu = false}) async {
     _isReady = false;
     _npuActive = false;
-    _session?.release();
+    _onnxSession?.release();
+    _tfliteInterpreter?.close();
 
+    _backend = path.endsWith('.tflite') ? _Backend.tflite : _Backend.onnx;
+
+    if (_backend == _Backend.tflite) {
+      await _loadTflite(path, useNpu: useNpu);
+    } else {
+      await _loadOnnx(path, useNpu: useNpu);
+    }
+  }
+
+  Future<void> _loadTflite(String path, {bool useNpu = false}) async {
+    try {
+      final options = InterpreterOptions()..threads = 4;
+
+      if (useNpu) {
+        try {
+          options.addDelegate(NnApiDelegate());
+          _npuActive = true;
+          _log("✓ NNAPI activado — NPU MediaTek APU 790");
+        } catch (e) {
+          _log("✗ NNAPI no disponible: $e → CPU");
+        }
+      } else {
+        _log("Modo CPU seleccionado");
+      }
+
+      _tfliteInterpreter = Interpreter.fromFile(File(path), options: options);
+      _tfliteInterpreter!.allocateTensors();
+
+      final inShape = _tfliteInterpreter!.getInputTensor(0).shape;
+      final outShape = _tfliteInterpreter!.getOutputTensor(0).shape;
+      _isReady = true;
+      _log("TFLite cargado OK → entrada: $inShape  salida: $outShape");
+      _log("Dispositivo: ${_npuActive ? 'NPU (NNAPI)' : 'CPU'}");
+    } catch (e) {
+      _log("Error cargando TFLite: $e");
+      _isReady = false;
+      rethrow;
+    }
+  }
+
+  Future<void> _loadOnnx(String path, {bool useNpu = false}) async {
     try {
       final sessionOptions = OrtSessionOptions();
 
       if (useNpu) {
         try {
-          // Intentar activar NNAPI para MediaTek APU 790.
-          // Lanza NoSuchMethodError en versiones que no lo soportan → catch.
           (sessionOptions as dynamic).appendExecutionProvider_Nnapi(0);
           _npuActive = true;
-          _log("✓ NNAPI activado — delegando al NPU MediaTek APU");
+          _log("✓ NNAPI activado (ONNX Runtime)");
         } catch (_) {
           try {
-            // Fallback: API alternativa según versión del paquete
             (sessionOptions as dynamic).appendExecutionProvider('nnapi');
             _npuActive = true;
-            _log("✓ NNAPI activado (API v2)");
+            _log("✓ NNAPI activado (ORT v2 API)");
           } catch (e2) {
-            _npuActive = false;
-            _log("✗ NNAPI no disponible en esta versión de onnxruntime: $e2");
-            _log("  → Ejecutando en CPU");
+            _log("✗ NNAPI no disponible: $e2 → CPU");
           }
         }
       } else {
         _log("Modo CPU seleccionado");
       }
 
-      _session = OrtSession.fromFile(File(path), sessionOptions);
+      _onnxSession = OrtSession.fromFile(File(path), sessionOptions);
       _isReady = true;
-      _log("Modelo cargado OK: $path");
-      _log("Dispositivo: ${_npuActive ? 'NPU (NNAPI)' : 'CPU'}");
+      _log("ONNX cargado OK: $path");
     } catch (e) {
-      _log("Error cargando modelo: $e");
+      _log("Error cargando ONNX: $e");
       _isReady = false;
       rethrow;
     }
   }
 
-  void _log(String msg) {
-    if (onLog != null) {
-      onLog!(msg);
+  // ── Inferencia ─────────────────────────────────────────────────────────────
+
+  Future<List<double>?> runInference(CameraImage image, {int resolution = 256}) async {
+    if (!_isReady) return null;
+
+    final yuvData = YUVData.fromCameraImage(image, resolution);
+    if (yuvData == null) return null;
+
+    if (_backend == _Backend.tflite) {
+      return _runTflite(yuvData, resolution);
     } else {
-      print(msg);
+      return _runOnnx(yuvData, resolution);
     }
   }
 
-  Future<List<double>?> runInference(CameraImage cameraImage, {int resolution = 256}) async {
-    if (!_isReady || _session == null) return null;
+  Future<List<double>?> _runTflite(YUVData yuvData, int resolution) async {
+    if (_tfliteInterpreter == null) return null;
 
-    final yuvData = YUVData.fromCameraImage(cameraImage, resolution);
-    if (yuvData == null) return null;
+    // Preprocesar en isolate → NHWC [1, H, W, 3]
+    final inputFloats = await compute(
+      _convertYuvIsolate,
+      InferenceParams(yuv: yuvData, resolution: resolution, nhwc: true),
+    );
 
-    final List<double> inputFloats;
+    final inputData = Float32List.fromList(inputFloats);
+    final outputData = Float32List(resolution * resolution); // [1, H, W, 1] aplanado
+
     try {
-      inputFloats = await compute(
-        _convertYuvIsolate,
-        InferenceParams(yuv: yuvData, resolution: resolution),
-      );
+      _tfliteInterpreter!.run(inputData, outputData);
+      // Aplicar sigmoid → valores [0, 1]
+      return outputData.map((v) => 1.0 / (1.0 + exp(-v))).toList();
     } catch (e) {
-      _log("Error preprocesamiento YUV: $e");
+      _log("Error TFLite inferencia: $e");
       return null;
     }
+  }
+
+  Future<List<double>?> _runOnnx(YUVData yuvData, int resolution) async {
+    if (_onnxSession == null) return null;
+
+    // Preprocesar en isolate → NCHW [1, 3, H, W]
+    final inputFloats = await compute(
+      _convertYuvIsolate,
+      InferenceParams(yuv: yuvData, resolution: resolution, nhwc: false),
+    );
 
     final inputOrt = OrtValueTensor.createTensorWithDataList(
       inputFloats,
@@ -88,7 +159,7 @@ class InferenceService {
     final inputs = {'input': inputOrt};
 
     try {
-      final outputs = await _session!.runAsync(runOptions, inputs);
+      final outputs = await _onnxSession!.runAsync(runOptions, inputs);
       final outputTensor = outputs?[0];
       if (outputTensor == null) return null;
 
@@ -98,23 +169,31 @@ class InferenceService {
 
       return outputData[0][0].expand((row) => row).toList();
     } catch (e) {
-      _log("Error inferencia: $e");
+      _log("Error ONNX inferencia: $e");
       return null;
     }
   }
 
+  void _log(String msg) => onLog != null ? onLog!(msg) : print(msg);
+
   void dispose() {
-    _session?.release();
+    _onnxSession?.release();
+    _tfliteInterpreter?.close();
     _isReady = false;
   }
 }
 
-// ── Clases de datos para el Isolate ─────────────────────────────────────────
+// ── Clases de datos para el Isolate ──────────────────────────────────────────
 
 class InferenceParams {
   final YUVData yuv;
   final int resolution;
-  const InferenceParams({required this.yuv, required this.resolution});
+  final bool nhwc; // true → TFLite [1,H,W,3], false → ONNX [1,3,H,W]
+  const InferenceParams({
+    required this.yuv,
+    required this.resolution,
+    this.nhwc = false,
+  });
 }
 
 class YUVData {
@@ -140,7 +219,6 @@ class YUVData {
 
   static YUVData? fromCameraImage(CameraImage image, int resolution) {
     if (image.planes.isEmpty) return null;
-    // La cámara en ResolutionPreset.high es 720p+, siempre mayor a cualquier resolución
     if (image.width < resolution || image.height < resolution) return null;
 
     return YUVData(
@@ -156,45 +234,48 @@ class YUVData {
   }
 }
 
-// ── Función top-level para compute() (corre en Isolate separado) ─────────────
+// ── Función top-level para compute() ─────────────────────────────────────────
 
 List<double> _convertYuvIsolate(InferenceParams params) {
   final int res = params.resolution;
-  final YUVData data = params.yuv;
+  final YUVData d = params.yuv;
 
-  // Buffer planar [1, 3, res, res] en orden RRR...GGG...BBB...
+  final int startX = (d.width - res) ~/ 2;
+  final int startY = (d.height - res) ~/ 2;
+
   final floats = List<double>.filled(3 * res * res, 0.0);
-
-  // Center-crop desde la imagen de cámara
-  final int startX = (data.width - res) ~/ 2;
-  final int startY = (data.height - res) ~/ 2;
 
   for (int y = 0; y < res; y++) {
     for (int x = 0; x < res; x++) {
       final int imgX = startX + x;
       final int imgY = startY + y;
 
-      final int indexY = imgY * data.yRowStride + imgX;
-      final int yp = data.planeY[indexY];
+      final int indexY = imgY * d.yRowStride + imgX;
+      final int yp = d.planeY[indexY];
 
-      final int uvIndex =
-          (imgY >> 1) * data.uvRowStride + (imgX >> 1) * data.uvPixelStride;
-      final int up = data.planeU[uvIndex];
-      final int vp = data.planeV[uvIndex];
+      final int uvIdx =
+          (imgY >> 1) * d.uvRowStride + (imgX >> 1) * d.uvPixelStride;
+      final int up = d.planeU[uvIdx];
+      final int vp = d.planeV[uvIdx];
 
-      // YUV → RGB estándar BT.601
-      int r = (yp + 1.402 * (vp - 128)).toInt();
-      int g = (yp - 0.344136 * (up - 128) - 0.714136 * (vp - 128)).toInt();
-      int b = (yp + 1.772 * (up - 128)).toInt();
+      // BT.601 YUV → RGB
+      final double rf = (yp + 1.402 * (vp - 128)).clamp(0, 255) / 255.0;
+      final double gf = (yp - 0.344136 * (up - 128) - 0.714136 * (vp - 128))
+              .clamp(0, 255) /
+          255.0;
+      final double bf = (yp + 1.772 * (up - 128)).clamp(0, 255) / 255.0;
 
-      final double rf = r.clamp(0, 255) / 255.0;
-      final double gf = g.clamp(0, 255) / 255.0;
-      final double bf = b.clamp(0, 255) / 255.0;
-
-      // Orden planar CHW
-      floats[y * res + x] = rf;
-      floats[res * res + y * res + x] = gf;
-      floats[2 * res * res + y * res + x] = bf;
+      if (params.nhwc) {
+        // NHWC: [y, x, c] → índice = y*res*3 + x*3 + c
+        floats[y * res * 3 + x * 3 + 0] = rf;
+        floats[y * res * 3 + x * 3 + 1] = gf;
+        floats[y * res * 3 + x * 3 + 2] = bf;
+      } else {
+        // NCHW: [c, y, x] → índice = c*res*res + y*res + x
+        floats[0 * res * res + y * res + x] = rf;
+        floats[1 * res * res + y * res + x] = gf;
+        floats[2 * res * res + y * res + x] = bf;
+      }
     }
   }
   return floats;

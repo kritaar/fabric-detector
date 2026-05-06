@@ -53,15 +53,19 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (result != null) {
         final path = result.files.single.path;
-        if (path != null && path.endsWith(".onnx")) {
+        final name = result.files.single.name;
+        if (path != null &&
+            (path.endsWith(".onnx") || path.endsWith(".tflite"))) {
+          final tipo = path.endsWith(".tflite") ? "TFLite" : "ONNX";
           setState(() {
             selectedModelPath = path;
-            _status = "Modelo listo:\n${result.files.single.name}";
+            _status = "Modelo $tipo listo:\n$name";
           });
         } else {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text("Por favor selecciona un archivo .onnx")),
+              const SnackBar(
+                  content: Text("Selecciona un archivo .onnx o .tflite")),
             );
           }
         }
@@ -127,7 +131,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ElevatedButton.icon(
               onPressed: _pickModel,
               icon: const Icon(Icons.folder_open),
-              label: const Text("Cargar Modelo (.onnx)"),
+              label: const Text("Cargar Modelo (.onnx / .tflite)"),
               style: ElevatedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 16),
               ),
